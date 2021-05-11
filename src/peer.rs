@@ -1,14 +1,14 @@
 use crate::torrent_file::Torrent;
-use bytes::buf::Buf;
-use bytes::BytesMut;
+use bytes::{Buf, BufMut, BytesMut};
 use futures::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_bytes::ByteBuf;
+use std::sync::Arc;
 use std::{convert::TryInto, net::Ipv4Addr};
 use tokio::net::TcpStream;
 use tokio_util::codec::{Decoder, Encoder, Framed};
 
-const PROTOCOL_NAME: &[u8] = b"BitTorrent protocol";
+const PROTOCOL_NAME: [u8; 19] = *b"BitTorrent protocol";
 
 #[derive(Debug, Deserialize)]
 struct TrackerResponse {
@@ -16,29 +16,48 @@ struct TrackerResponse {
     peers: ByteBuf,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct Peer {
+#[derive(Debug, Clone)]
+pub struct PeerSession {
+    data: PeerData,
+    torrent: Arc<Torrent>,
+    peer_id: [u8; 20],
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PeerData {
     ip: Ipv4Addr,
     port: u16,
 }
 
-impl std::fmt::Display for Peer {
+impl std::fmt::Display for PeerSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}", &self.ip, &self.port)
+        write!(f, "{}:{}", &self.data.ip, &self.data.port)
     }
 }
 
-impl Peer {
+impl PeerData {
     pub fn from_bytes(bytes: &[u8]) -> Self {
         let ip = Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3]);
         let port = u16::from_be_bytes([bytes[4], bytes[5]]);
 
         Self { ip, port }
     }
+}
 
-    pub async fn connect(&self, handshake: Handshake) -> anyhow::Result<()> {
-        let stream = TcpStream::connect((self.ip, self.port)).await?;
+impl PeerSession {
+    pub fn new(data: PeerData, torrent: Arc<Torrent>, peer_id: &[u8; 20]) -> Self {
+        Self {
+            data,
+            torrent,
+            peer_id: peer_id.to_owned(),
+        }
+    }
+
+    pub async fn connect(&self) -> anyhow::Result<()> {
+        let stream = TcpStream::connect((self.data.ip, self.data.port)).await?;
         let mut stream = Framed::new(stream, HandshakeCodec);
+
+        let handshake = Handshake::new(&self.torrent.info_hash, &self.peer_id);
 
         stream.send(handshake).await?;
 
@@ -54,18 +73,20 @@ impl Peer {
 pub struct Handshake {
     info_hash: [u8; 20],
     peer_id: [u8; 20],
+    protocol_name: [u8; 19],
+    reserved: [u8; 8],
 }
 
 struct HandshakeCodec;
 
 impl Handshake {
-    pub fn new(info_hash: &[u8], peer_id: &[u8]) -> anyhow::Result<Self> {
-        let s = Self {
-            info_hash: info_hash.try_into()?,
-            peer_id: peer_id.try_into()?,
-        };
-
-        Ok(s)
+    pub fn new(info_hash: &[u8; 20], peer_id: &[u8; 20]) -> Self {
+        Self {
+            info_hash: info_hash.to_owned(),
+            peer_id: peer_id.to_owned(),
+            protocol_name: PROTOCOL_NAME,
+            reserved: [0_u8; 8],
+        }
     }
 }
 
@@ -73,8 +94,8 @@ impl Encoder<Handshake> for HandshakeCodec {
     type Error = std::io::Error;
 
     fn encode(&mut self, item: Handshake, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        dst.extend_from_slice(b"\x13");
-        dst.extend_from_slice(PROTOCOL_NAME);
+        dst.put_u8(item.protocol_name.len().try_into().unwrap());
+        dst.extend_from_slice(&item.protocol_name);
         dst.extend_from_slice(&[0u8; 8]);
         dst.extend_from_slice(&item.info_hash);
         dst.extend_from_slice(&item.peer_id);
@@ -112,8 +133,8 @@ impl Decoder for HandshakeCodec {
         }
 
         // protocol string
-        let mut prot = [0; 19];
-        src.copy_to_slice(&mut prot);
+        let mut protocol_name = [0; 19];
+        src.copy_to_slice(&mut protocol_name);
         // reserved field
         let mut reserved = [0; 8];
         src.copy_to_slice(&mut reserved);
@@ -124,19 +145,28 @@ impl Decoder for HandshakeCodec {
         let mut peer_id = [0; 20];
         src.copy_to_slice(&mut peer_id);
 
-        Ok(Some(Handshake { info_hash, peer_id }))
+        Ok(Some(Handshake {
+            info_hash,
+            peer_id,
+            protocol_name,
+            reserved,
+        }))
     }
 }
 
 #[derive(Debug)]
 pub struct PeersInfo {
     pub interval: u16,
-    pub peers: Vec<Peer>,
+    pub peers: Vec<PeerData>,
 }
 
 impl From<TrackerResponse> for PeersInfo {
     fn from(res: TrackerResponse) -> Self {
-        let peers = res.peers.chunks_exact(6).map(Peer::from_bytes).collect();
+        let peers = res
+            .peers
+            .chunks_exact(6)
+            .map(PeerData::from_bytes)
+            .collect();
 
         Self {
             interval: res.interval,
@@ -162,6 +192,23 @@ pub async fn request_peer_info(
     let bytes = tracker_response.bytes().await?;
     let tracker_response: TrackerResponse = serde_bencode::from_bytes(&bytes)?;
 
-    let details: PeersInfo = tracker_response.into();
+    let details = tracker_response.into();
     Ok(details)
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use tokio_util::codec::Encoder;
+
+    #[test]
+    fn encode_handshake() {
+        let handshake = Handshake::new(&[1u8; 20], b"Daniel Rivas12345678");
+        let mut codec = HandshakeCodec;
+
+        let mut bytes = BytesMut::with_capacity(50);
+        codec.encode(handshake, &mut bytes).unwrap();
+
+        assert_eq!(bytes.len(), 68);
+    }
 }

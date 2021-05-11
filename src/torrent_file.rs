@@ -52,7 +52,7 @@ impl Info {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct Torrent {
+pub struct TorrentFile {
     pub info: Info,
     #[serde(default)]
     pub announce: Option<String>,
@@ -75,9 +75,16 @@ pub struct Torrent {
     pub created_by: Option<String>,
 }
 
+#[derive(Debug)]
+pub struct Torrent {
+    pub file: TorrentFile,
+    pub info_hash: [u8; 20],
+}
+
 impl Torrent {
     pub fn build_tracker_url(&self, peer_id: &[u8], port: u16) -> anyhow::Result<Url> {
         let announce = self
+            .file
             .announce
             .as_ref()
             .ok_or_else(|| anyhow!("No announce found"))?;
@@ -90,13 +97,28 @@ impl Torrent {
             .append_pair("compact", "1")
             .append_pair(
                 "left",
-                &(self.info.length.expect("No length given").to_string()),
+                &(self.file.info.length.expect("No length given").to_string()),
             )
             .encoding_override(Some(&iso_8859_1_encode))
-            .append_pair("info_hash", &iso_8859_1_decode(&self.info.hash()?))
+            .append_pair("info_hash", &iso_8859_1_decode(&self.info_hash))
             .append_pair("peer_id", &iso_8859_1_decode(peer_id));
 
         Ok(base)
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> anyhow::Result<Torrent> {
+        let torrent: TorrentFile = serde_bencode::from_bytes(bytes)?;
+        Ok(torrent.into())
+    }
+}
+
+impl From<TorrentFile> for Torrent {
+    fn from(file: TorrentFile) -> Self {
+        let info_hash = file
+            .info
+            .hash()
+            .expect("Couldn't get SHA1 hash for torrent info");
+        Self { file, info_hash }
     }
 }
 
