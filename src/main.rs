@@ -27,7 +27,7 @@ async fn main() -> anyhow::Result<()> {
     for peer_data in details.peers {
         let torrent = Arc::clone(&torrent);
         let handle = tokio::spawn(async move {
-            let session = PeerSession::new(peer_data, torrent, PEER_ID);
+            let mut session = PeerSession::new(peer_data, torrent, PEER_ID).await?;
             session.connect().await?;
             Ok(()) as anyhow::Result<()>
         });

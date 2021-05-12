@@ -6,12 +6,13 @@ pub(crate) const PROTOCOL_NAME: [u8; 19] = *b"BitTorrent protocol";
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct Handshake {
-    info_hash: [u8; 20],
-    peer_id: [u8; 20],
-    protocol_name: [u8; 19],
-    reserved: [u8; 8],
+    pub info_hash: [u8; 20],
+    pub peer_id: [u8; 20],
+    pub protocol_name: [u8; 19],
+    pub reserved: [u8; 8],
 }
 
+#[derive(Debug)]
 pub(crate) struct HandshakeCodec;
 
 impl Handshake {

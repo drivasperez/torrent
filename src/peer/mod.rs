@@ -1,16 +1,19 @@
 use crate::torrent_file::Torrent;
+use anyhow::anyhow;
 use futures::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_bytes::ByteBuf;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 use tokio::net::TcpStream;
-use tokio_util::codec::Framed;
+use tokio_util::codec::{Framed, FramedParts};
 
 mod handshake;
 mod peermessage;
 
 use handshake::{Handshake, HandshakeCodec};
+
+use self::peermessage::PeerMessageCodec;
 
 #[derive(Debug, Deserialize)]
 struct TrackerResponse {
@@ -18,11 +21,76 @@ struct TrackerResponse {
     peers: ByteBuf,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
+enum PeerStream {
+    Handshake(Option<Framed<TcpStream, HandshakeCodec>>),
+    Message(Option<Framed<TcpStream, PeerMessageCodec>>),
+}
+
+impl PeerStream {
+    pub fn get_handshake_framed(&mut self) -> &mut Framed<TcpStream, HandshakeCodec> {
+        match self {
+            Self::Handshake(stream) => {
+                return stream.as_mut().unwrap();
+            }
+            Self::Message(stream) => {
+                let stream = stream.take().unwrap();
+                *self = Self::to_handshake(stream);
+                if let Self::Handshake(Some(stream)) = self {
+                    return stream;
+                } else {
+                    unreachable!();
+                }
+            }
+        }
+    }
+
+    pub fn get_message_framed(&mut self) -> &mut Framed<TcpStream, PeerMessageCodec> {
+        match self {
+            Self::Message(stream) => {
+                return stream.as_mut().unwrap();
+            }
+            Self::Handshake(stream) => {
+                let stream = stream.take().unwrap();
+                *self = Self::to_message(stream);
+                if let Self::Message(Some(stream)) = self {
+                    return stream;
+                } else {
+                    unreachable!();
+                }
+            }
+        }
+    }
+
+    fn to_handshake<T>(stream: Framed<TcpStream, T>) -> Self {
+        let old_parts = stream.into_parts();
+        let mut new_parts = FramedParts::new(old_parts.io, HandshakeCodec);
+        // reuse buffers of previous codec
+        new_parts.read_buf = old_parts.read_buf;
+        new_parts.write_buf = old_parts.write_buf;
+        let stream = Framed::from_parts(new_parts);
+
+        Self::Handshake(Some(stream))
+    }
+
+    fn to_message<T>(stream: Framed<TcpStream, T>) -> Self {
+        let old_parts = stream.into_parts();
+        let mut new_parts = FramedParts::new(old_parts.io, PeerMessageCodec);
+        // reuse buffers of previous codec
+        new_parts.read_buf = old_parts.read_buf;
+        new_parts.write_buf = old_parts.write_buf;
+        let stream = Framed::from_parts(new_parts);
+
+        Self::Message(Some(stream))
+    }
+}
+
+#[derive(Debug)]
 pub struct PeerSession {
     data: PeerData,
     torrent: Arc<Torrent>,
     peer_id: [u8; 20],
+    stream: PeerStream,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -47,27 +115,43 @@ impl PeerData {
 }
 
 impl PeerSession {
-    pub fn new(data: PeerData, torrent: Arc<Torrent>, peer_id: &[u8; 20]) -> Self {
-        Self {
+    pub async fn new(
+        data: PeerData,
+        torrent: Arc<Torrent>,
+        peer_id: &[u8; 20],
+    ) -> anyhow::Result<Self> {
+        let stream = TcpStream::connect((data.ip, data.port)).await?;
+        let stream = Framed::new(stream, HandshakeCodec);
+
+        Ok(Self {
             data,
             torrent,
             peer_id: peer_id.to_owned(),
-        }
+            stream: PeerStream::Handshake(Some(stream)),
+        })
     }
 
-    pub async fn connect(&self) -> anyhow::Result<()> {
-        let stream = TcpStream::connect((self.data.ip, self.data.port)).await?;
-        let mut stream = Framed::new(stream, HandshakeCodec);
+    pub async fn connect(&mut self) -> anyhow::Result<()> {
+        let stream = self.stream.get_handshake_framed();
 
         let handshake = Handshake::new(&self.torrent.info_hash, &self.peer_id);
 
         stream.send(handshake).await?;
 
-        let n = stream.next().await;
-
-        println!("{:?}", n);
-
-        Ok(())
+        loop {
+            let n = stream.next().await;
+            match n {
+                None => continue,
+                Some(peer_shake) => {
+                    if peer_shake?.info_hash == self.torrent.info_hash {
+                        println!("They want the same thing");
+                        return Ok(());
+                    } else {
+                        return Err(anyhow!("Not the same hash"));
+                    }
+                }
+            }
+        }
     }
 }
 

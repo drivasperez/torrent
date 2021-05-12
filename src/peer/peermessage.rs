@@ -48,6 +48,7 @@ impl PeerMessage {
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct PeerMessageCodec;
 
 impl Encoder<PeerMessage> for PeerMessageCodec {
