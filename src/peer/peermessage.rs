@@ -84,18 +84,12 @@ impl Decoder for PeerMessageCodec {
         let mut tmp_buf = src.clone();
         let message_length = tmp_buf.get_u32() as usize;
 
-        if message_length != tmp_buf.remaining() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!(
-                    "Message length {} did not match length of message {}",
-                    message_length,
-                    tmp_buf.remaining()
-                ),
-            ));
+        if src.remaining() > message_length + 4 {
+            src.advance(4);
+        } else {
+            return Ok(None);
         }
 
-        let _length = src.get_u32();
         let message_id = src.get_u8();
 
         let message = match message_id {
@@ -128,10 +122,10 @@ impl Decoder for PeerMessageCodec {
                 let length = src.get_u32();
                 PeerMessage::Cancel(idx, begin, length)
             }
-            _ => {
+            n => {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
-                    "Message length must match length of message",
+                    format!("Invalid message ID: {}", n),
                 ))
             }
         };

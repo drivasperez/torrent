@@ -13,6 +13,7 @@ mod peermessage;
 
 use handshake::{Handshake, HandshakeCodec};
 
+pub use self::peermessage::PeerMessage;
 use self::peermessage::PeerMessageCodec;
 
 #[derive(Debug, Deserialize)]
@@ -85,9 +86,20 @@ impl PeerStream {
     }
 }
 
+#[derive(Debug, Default)]
+struct PeerSessionState {
+    index: usize,
+    choked: bool,
+    downloaded: usize,
+    requested: usize,
+    backlog: usize,
+    buf: Vec<u8>,
+}
+
 #[derive(Debug)]
 pub struct PeerSession {
     data: PeerData,
+    state: PeerSessionState,
     torrent: Arc<Torrent>,
     peer_id: [u8; 20],
     stream: PeerStream,
@@ -128,6 +140,7 @@ impl PeerSession {
             torrent,
             peer_id: peer_id.to_owned(),
             stream: PeerStream::Handshake(Some(stream)),
+            state: Default::default(),
         })
     }
 
@@ -144,11 +157,34 @@ impl PeerSession {
                 None => continue,
                 Some(peer_shake) => {
                     if peer_shake?.info_hash == self.torrent.info_hash {
-                        println!("They want the same thing");
                         return Ok(());
                     } else {
                         return Err(anyhow!("Not the same hash"));
                     }
+                }
+            }
+        }
+    }
+
+    // TODO: This (and PeerMessage) probably shouldn't be pub
+    pub async fn send_message(&mut self, msg: PeerMessage) -> anyhow::Result<()> {
+        let stream = self.stream.get_message_framed();
+
+        stream.send(msg).await?;
+
+        Ok(())
+    }
+
+    pub async fn recv_message(&mut self) -> anyhow::Result<PeerMessage> {
+        let stream = self.stream.get_message_framed();
+        loop {
+            let n = stream.next().await;
+            match n {
+                None => continue,
+                Some(res) => {
+                    // TODO: Parse message here and update state.
+                    let msg = res?;
+                    return Ok(msg);
                 }
             }
         }

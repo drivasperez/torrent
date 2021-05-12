@@ -1,6 +1,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
-use torrent::{peer::PeerSession, request_peer_info, Torrent};
+use torrent::{
+    peer::{PeerMessage, PeerSession},
+    request_peer_info, Torrent,
+};
 
 use structopt::StructOpt;
 
@@ -29,6 +32,10 @@ async fn main() -> anyhow::Result<()> {
         let handle = tokio::spawn(async move {
             let mut session = PeerSession::new(peer_data, torrent, PEER_ID).await?;
             session.connect().await?;
+            session.send_message(PeerMessage::Unchoke).await?;
+            session.send_message(PeerMessage::Interested).await?;
+            let msg = session.recv_message().await?;
+            println!("Message: {:#?}", msg);
             Ok(()) as anyhow::Result<()>
         });
 
