@@ -16,6 +16,16 @@ pub enum PeerMessage {
 }
 
 impl PeerMessage {
+    pub fn payload_len(&self) -> usize {
+        match self {
+            Self::Choke | Self::Unchoke | Self::Interested | Self::NotInterested => 0,
+            Self::Have(p) => p.len(),
+            Self::Bitfield(p) => p.len(),
+            Self::Request(_, _, _) => std::mem::size_of::<u32>() * 3,
+            Self::Piece(p) => p.len(),
+            Self::Cancel(_, _, _) => std::mem::size_of::<u32>() * 3,
+        }
+    }
     pub fn message_id(&self) -> u8 {
         match self {
             Self::Choke => 0,            // messageID = 0
@@ -106,6 +116,7 @@ impl Decoder for PeerMessageCodec {
             5 => {
                 let mut payload = vec![0; message_length];
                 src.copy_to_slice(&mut payload);
+
                 PeerMessage::Bitfield(Bytes::from(payload))
             }
             6 => {

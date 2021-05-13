@@ -35,7 +35,7 @@ async fn main() -> anyhow::Result<()> {
             session.send_message(PeerMessage::Unchoke).await?;
             session.send_message(PeerMessage::Interested).await?;
             let msg = session.recv_message().await?;
-            println!("Message: {:#?}", msg);
+            println!("Message length: {}", msg.payload_len());
             Ok(()) as anyhow::Result<()>
         });
 
