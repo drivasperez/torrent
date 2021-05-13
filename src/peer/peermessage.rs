@@ -84,8 +84,9 @@ impl Decoder for PeerMessageCodec {
         let mut tmp_buf = src.clone();
         let message_length = tmp_buf.get_u32() as usize;
 
-        if src.remaining() > message_length + 4 {
-            src.advance(4);
+        let length_size = std::mem::size_of::<u32>();
+        if src.remaining() > message_length + length_size {
+            src.advance(length_size);
         } else {
             return Ok(None);
         }
@@ -103,7 +104,8 @@ impl Decoder for PeerMessageCodec {
                 PeerMessage::Have(payload)
             }
             5 => {
-                let payload = src.to_vec();
+                let mut payload = vec![0; message_length];
+                src.copy_to_slice(&mut payload);
                 PeerMessage::Bitfield(Bytes::from(payload))
             }
             6 => {
@@ -113,7 +115,8 @@ impl Decoder for PeerMessageCodec {
                 PeerMessage::Request(idx, begin, length)
             }
             7 => {
-                let payload = src.to_vec();
+                let mut payload = vec![0; message_length];
+                src.copy_to_slice(&mut payload);
                 PeerMessage::Piece(Bytes::from(payload))
             }
             8 => {
