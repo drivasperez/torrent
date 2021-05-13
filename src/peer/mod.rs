@@ -145,6 +145,7 @@ impl PeerSession {
     }
 
     pub async fn connect(&mut self) -> anyhow::Result<()> {
+        log::trace!("Connecting to peer {}", self.data.ip);
         let stream = self.stream.get_handshake_framed();
 
         let handshake = Handshake::new(&self.torrent.info_hash, &self.peer_id);

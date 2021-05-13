@@ -17,6 +17,7 @@ struct Opt {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    pretty_env_logger::init();
     let opt = Opt::from_args();
 
     let file = tokio::fs::read(opt.torrent).await?;
