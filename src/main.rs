@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::sync::mpsc::channel;
 use torrent::{
     peer::{PeerMessage, PeerSession},
     request_peer_info, Torrent,
@@ -27,25 +28,43 @@ async fn main() -> anyhow::Result<()> {
 
     let mut handles = Vec::new();
 
+    let (save_tx, mut save_rx) = channel(50);
+
+    let work_queue = torrent.work_queue().await?;
+
     let torrent = Arc::new(torrent);
-    for peer_data in details.peers {
+
+    for peer_data in details.peers.into_iter().take(1) {
         let torrent = Arc::clone(&torrent);
+        let work_queue = work_queue.clone();
+        let save_tx = save_tx.clone();
         let handle = tokio::spawn(async move {
-            let mut session = PeerSession::new(peer_data, torrent, PEER_ID).await?;
+            let mut session =
+                PeerSession::new(peer_data, torrent, work_queue, save_tx, PEER_ID).await?;
             session.connect().await?;
-            session.send_message(PeerMessage::Unchoke).await?;
             session.send_message(PeerMessage::Interested).await?;
             let msg = session.recv_message().await?;
-            println!("Message length: {}", msg.payload_len());
+            println!("Message: {}", msg);
             Ok(()) as anyhow::Result<()>
         });
 
         handles.push(handle);
     }
 
+    let save_handle = tokio::spawn(async move {
+        while let Some(result) = save_rx.recv().await {
+            println!(
+                "Got work result: idx {}, len {} bytes",
+                result.idx,
+                result.bytes.len()
+            )
+        }
+    });
+
     for handle in handles {
         handle.await??;
     }
+    save_handle.await?;
 
     Ok(())
 }

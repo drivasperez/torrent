@@ -1,11 +1,16 @@
-use crate::torrent_file::Torrent;
+use crate::{
+    queues::{WorkQueue, WorkResult},
+    torrent_file::Torrent,
+};
 use anyhow::anyhow;
+use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_bytes::ByteBuf;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 use tokio::net::TcpStream;
+use tokio::sync::mpsc::Sender;
 use tokio_util::codec::{Framed, FramedParts};
 
 mod handshake;
@@ -31,14 +36,12 @@ enum PeerStream {
 impl PeerStream {
     pub fn get_handshake_framed(&mut self) -> &mut Framed<TcpStream, HandshakeCodec> {
         match self {
-            Self::Handshake(stream) => {
-                return stream.as_mut().unwrap();
-            }
+            Self::Handshake(stream) => stream.as_mut().unwrap(),
             Self::Message(stream) => {
                 let stream = stream.take().unwrap();
-                *self = Self::to_handshake(stream);
+                *self = Self::make_handshake(stream);
                 if let Self::Handshake(Some(stream)) = self {
-                    return stream;
+                    stream
                 } else {
                     unreachable!();
                 }
@@ -48,14 +51,12 @@ impl PeerStream {
 
     pub fn get_message_framed(&mut self) -> &mut Framed<TcpStream, PeerMessageCodec> {
         match self {
-            Self::Message(stream) => {
-                return stream.as_mut().unwrap();
-            }
+            Self::Message(stream) => stream.as_mut().unwrap(),
             Self::Handshake(stream) => {
                 let stream = stream.take().unwrap();
-                *self = Self::to_message(stream);
+                *self = Self::make_message(stream);
                 if let Self::Message(Some(stream)) = self {
-                    return stream;
+                    stream
                 } else {
                     unreachable!();
                 }
@@ -63,7 +64,7 @@ impl PeerStream {
         }
     }
 
-    fn to_handshake<T>(stream: Framed<TcpStream, T>) -> Self {
+    fn make_handshake<T>(stream: Framed<TcpStream, T>) -> Self {
         let old_parts = stream.into_parts();
         let mut new_parts = FramedParts::new(old_parts.io, HandshakeCodec);
         // reuse buffers of previous codec
@@ -74,7 +75,7 @@ impl PeerStream {
         Self::Handshake(Some(stream))
     }
 
-    fn to_message<T>(stream: Framed<TcpStream, T>) -> Self {
+    fn make_message<T>(stream: Framed<TcpStream, T>) -> Self {
         let old_parts = stream.into_parts();
         let mut new_parts = FramedParts::new(old_parts.io, PeerMessageCodec);
         // reuse buffers of previous codec
@@ -86,14 +87,31 @@ impl PeerStream {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct PeerSessionState {
     index: usize,
     choked: bool,
+    interested: bool,
     downloaded: usize,
     requested: usize,
     backlog: usize,
     buf: Vec<u8>,
+    bitfield: Bytes,
+}
+
+impl Default for PeerSessionState {
+    fn default() -> Self {
+        Self {
+            index: 0,
+            choked: true,
+            interested: false,
+            downloaded: 0,
+            requested: 0,
+            backlog: 0,
+            buf: Vec::default(),
+            bitfield: Default::default(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -101,6 +119,8 @@ pub struct PeerSession {
     data: PeerData,
     state: PeerSessionState,
     torrent: Arc<Torrent>,
+    work_queue: WorkQueue,
+    save_tx: Sender<WorkResult>,
     peer_id: [u8; 20],
     stream: PeerStream,
 }
@@ -130,6 +150,8 @@ impl PeerSession {
     pub async fn new(
         data: PeerData,
         torrent: Arc<Torrent>,
+        work_queue: WorkQueue,
+        save_tx: Sender<WorkResult>,
         peer_id: &[u8; 20],
     ) -> anyhow::Result<Self> {
         let stream = TcpStream::connect((data.ip, data.port)).await?;
@@ -138,6 +160,8 @@ impl PeerSession {
         Ok(Self {
             data,
             torrent,
+            work_queue,
+            save_tx,
             peer_id: peer_id.to_owned(),
             stream: PeerStream::Handshake(Some(stream)),
             state: Default::default(),
@@ -189,6 +213,35 @@ impl PeerSession {
                 }
             }
         }
+    }
+
+    pub async fn handle_message(&mut self) -> anyhow::Result<()> {
+        let message = self.recv_message().await?;
+        match message {
+            PeerMessage::Choke => {
+                self.state.choked = true;
+            }
+            PeerMessage::Unchoke => {
+                self.state.choked = false;
+            }
+            PeerMessage::Interested => {
+                self.state.interested = true;
+            }
+            PeerMessage::NotInterested => {
+                self.state.interested = false;
+            }
+            PeerMessage::Have(_) => {}
+            PeerMessage::Bitfield(bytes) => {
+                self.state.bitfield = bytes;
+            }
+            PeerMessage::Request(_, _, _) => {}
+            PeerMessage::Piece(piece) => {
+                log::info!("Got piece: {} bytes", piece.len());
+            }
+            PeerMessage::Cancel(_, _, _) => {}
+        };
+
+        Ok(())
     }
 }
 

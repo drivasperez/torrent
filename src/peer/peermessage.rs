@@ -1,5 +1,4 @@
 use bytes::{Buf, BufMut, Bytes};
-use std::io::Read;
 use tokio_util::codec::{Decoder, Encoder};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -8,18 +7,42 @@ pub enum PeerMessage {
     Unchoke,                // messageID = 1
     Interested,             // messageID = 2
     NotInterested,          // messageID = 3
-    Have([u8; 4]),          // messageID = 4
+    Have(u32),              // messageID = 4
     Bitfield(Bytes),        // messageID = 5
     Request(u32, u32, u32), // messageID = 6
     Piece(Bytes),           // messageID = 7
     Cancel(u32, u32, u32),  // messageId = 8
 }
 
+impl std::fmt::Display for PeerMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Self::Choke => String::from("Choke"),
+            Self::Unchoke => String::from("Unchoke"),
+            Self::Interested => String::from("Interested"),
+            Self::NotInterested => String::from("NotInterested"),
+            Self::Have(idx) => format!("Have {}", idx),
+            Self::Bitfield(_) => String::from("Bitfield"),
+            Self::Request(idx, begin, length) => format!(
+                "Request (index {}, begin: {}, length: {})",
+                idx, begin, length
+            ),
+            Self::Piece(b) => format!("Piece (len: {})", b.len()),
+            Self::Cancel(idx, begin, length) => format!(
+                "Cancel (index {}, begin: {}, length: {})",
+                idx, begin, length
+            ),
+        };
+
+        write!(f, "[PeerMessage]: {}", s)
+    }
+}
+
 impl PeerMessage {
     pub fn payload_len(&self) -> usize {
         match self {
             Self::Choke | Self::Unchoke | Self::Interested | Self::NotInterested => 0,
-            Self::Have(p) => p.len(),
+            Self::Have(_) => std::mem::size_of::<u32>(),
             Self::Bitfield(p) => p.len(),
             Self::Request(_, _, _) => std::mem::size_of::<u32>() * 3,
             Self::Piece(p) => p.len(),
@@ -43,7 +66,7 @@ impl PeerMessage {
     pub fn payload_bytes(&self) -> Option<Bytes> {
         match self {
             Self::Choke | Self::Unchoke | Self::Interested | Self::NotInterested => None,
-            Self::Have(p) => Some(Bytes::copy_from_slice(p)),
+            Self::Have(p) => Some(Bytes::copy_from_slice(&p.to_be_bytes())),
             Self::Bitfield(p) | Self::Piece(p) => Some(p.clone()),
             Self::Request(idx, begin, length) | Self::Cancel(idx, begin, length) => {
                 let mut bytes = Vec::new();
@@ -109,8 +132,7 @@ impl Decoder for PeerMessageCodec {
             2 => PeerMessage::Interested,
             3 => PeerMessage::NotInterested,
             4 => {
-                let mut payload = [0; 4];
-                src.copy_to_slice(&mut payload);
+                let payload = src.get_u32();
                 PeerMessage::Have(payload)
             }
             5 => {

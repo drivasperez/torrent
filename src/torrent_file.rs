@@ -3,8 +3,10 @@ use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_bytes::ByteBuf;
 use sha1::{Digest, Sha1};
-use std::borrow::Cow;
 use std::convert::TryFrom;
+use std::{borrow::Cow, convert::TryInto};
+
+use crate::queues::{PieceOfWork, WorkQueue};
 
 #[derive(Debug, Deserialize)]
 pub struct Node(String, i64);
@@ -48,6 +50,23 @@ impl Info {
 
     pub fn hash_pieces(&self) -> std::slice::ChunksExact<u8> {
         self.pieces.chunks_exact(20)
+    }
+
+    pub fn piece_bounds(&self, index: usize) -> (usize, usize) {
+        let length = self.piece_length as usize;
+        let begin = index * length;
+        let mut end = begin + length;
+
+        if end > self.length.unwrap() as usize {
+            end = self.length.unwrap() as usize;
+        }
+
+        (begin, end)
+    }
+
+    pub fn piece_length(&self, index: usize) -> usize {
+        let (begin, end) = self.piece_bounds(index);
+        end - begin
     }
 }
 
@@ -109,6 +128,23 @@ impl Torrent {
     pub fn from_bytes(bytes: &[u8]) -> anyhow::Result<Torrent> {
         let torrent: TorrentFile = serde_bencode::from_bytes(bytes)?;
         Ok(torrent.into())
+    }
+
+    pub async fn work_queue(&self) -> anyhow::Result<WorkQueue> {
+        let pieces = self.file.info.hash_pieces();
+        let (tx, rx) = async_channel::bounded(pieces.len());
+
+        for (idx, hash) in pieces.into_iter().enumerate() {
+            let length = self.file.info.piece_length(idx);
+            tx.send(PieceOfWork {
+                idx,
+                hash: hash.try_into()?,
+                length,
+            })
+            .await?;
+        }
+
+        Ok(WorkQueue { tx, rx })
     }
 }
 
