@@ -8,59 +8,33 @@ pub trait BitfieldMut: Bitfield {
     fn unset_piece(&mut self, index: usize);
 }
 
-impl Bitfield for &[u8] {
+impl<T> Bitfield for T
+where
+    T: AsRef<[u8]>,
+{
     fn has_piece(&self, index: usize) -> bool {
         let byte_idx = index / 8;
         let offset = index % 8;
-        self[byte_idx] >> (7 - offset) & 1 != 0
+        self.as_ref()[byte_idx] >> (7 - offset) & 1 != 0
     }
 }
 
-impl Bitfield for &mut [u8] {
-    fn has_piece(&self, index: usize) -> bool {
-        let byte_idx = index / 8;
-        let offset = index % 8;
-        self[byte_idx] >> (7 - offset) & 1 != 0
-    }
-}
-
-impl BitfieldMut for &mut [u8] {
+impl<T> BitfieldMut for T
+where
+    T: Bitfield + AsMut<[u8]>,
+{
     fn set_piece(&mut self, index: usize) {
         let byte_idx = index / 8;
         let offset = index % 8;
 
-        self[byte_idx] |= 1 << (7 - offset);
+        self.as_mut()[byte_idx] |= 1 << (7 - offset);
     }
 
     fn unset_piece(&mut self, index: usize) {
         let byte_idx = index / 8;
         let offset = index % 8;
 
-        self[byte_idx] &= 0 << (7 - offset);
-    }
-}
-
-impl<const N: usize> Bitfield for [u8; N] {
-    fn has_piece(&self, index: usize) -> bool {
-        let byte_idx = index / 8;
-        let offset = index % 8;
-        self[byte_idx] >> (7 - offset) & 1 != 0
-    }
-}
-
-impl<const N: usize> BitfieldMut for [u8; N] {
-    fn set_piece(&mut self, index: usize) {
-        let byte_idx = index / 8;
-        let offset = index % 8;
-
-        self[byte_idx] |= 1 << (7 - offset);
-    }
-
-    fn unset_piece(&mut self, index: usize) {
-        let byte_idx = index / 8;
-        let offset = index % 8;
-
-        self[byte_idx] &= 0 << (7 - offset);
+        self.as_mut()[byte_idx] &= 0 << (7 - offset);
     }
 }
 

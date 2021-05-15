@@ -8,7 +8,7 @@ pub enum PeerMessage {
     Interested,             // messageID = 2
     NotInterested,          // messageID = 3
     Have(u32),              // messageID = 4
-    Bitfield(Bytes),        // messageID = 5
+    Bitfield(Vec<u8>),      // messageID = 5
     Request(u32, u32, u32), // messageID = 6
     Piece(Bytes),           // messageID = 7
     Cancel(u32, u32, u32),  // messageId = 8
@@ -67,7 +67,8 @@ impl PeerMessage {
         match self {
             Self::Choke | Self::Unchoke | Self::Interested | Self::NotInterested => None,
             Self::Have(p) => Some(Bytes::copy_from_slice(&p.to_be_bytes())),
-            Self::Bitfield(p) | Self::Piece(p) => Some(p.clone()),
+            Self::Bitfield(p) => Some(p.clone().into()),
+            Self::Piece(p) => Some(p.clone()),
             Self::Request(idx, begin, length) | Self::Cancel(idx, begin, length) => {
                 let mut bytes = Vec::new();
 
@@ -136,10 +137,10 @@ impl Decoder for PeerMessageCodec {
                 PeerMessage::Have(payload)
             }
             5 => {
-                let mut payload = vec![0; message_length];
+                let mut payload = vec![0; message_length - 1];
                 src.copy_to_slice(&mut payload);
 
-                PeerMessage::Bitfield(Bytes::from(payload))
+                PeerMessage::Bitfield(payload)
             }
             6 => {
                 let idx = src.get_u32();
@@ -148,7 +149,7 @@ impl Decoder for PeerMessageCodec {
                 PeerMessage::Request(idx, begin, length)
             }
             7 => {
-                let mut payload = vec![0; message_length];
+                let mut payload = vec![0; message_length - 1];
                 src.copy_to_slice(&mut payload);
                 PeerMessage::Piece(Bytes::from(payload))
             }

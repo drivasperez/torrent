@@ -42,9 +42,12 @@ async fn main() -> anyhow::Result<()> {
             let mut session =
                 PeerSession::new(peer_data, torrent, work_queue, save_tx, PEER_ID).await?;
             session.connect().await?;
+            session.send_message(PeerMessage::Unchoke).await?;
             session.send_message(PeerMessage::Interested).await?;
-            let msg = session.recv_message().await?;
-            println!("Message: {}", msg);
+            session.handle_message().await?;
+
+            session.download().await?;
+
             Ok(()) as anyhow::Result<()>
         });
 

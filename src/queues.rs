@@ -1,4 +1,4 @@
-use async_channel::{Recv, Send};
+use async_channel::{RecvError, SendError};
 
 #[derive(Debug, Clone)]
 pub struct PieceOfWork {
@@ -9,7 +9,7 @@ pub struct PieceOfWork {
 
 #[derive(Debug, Clone)]
 pub struct WorkResult {
-    pub idx: u32,
+    pub idx: usize,
     pub bytes: Vec<u8>,
 }
 
@@ -20,11 +20,11 @@ pub struct WorkQueue {
 }
 
 impl WorkQueue {
-    pub async fn pop(&self) -> Recv<'_, PieceOfWork> {
-        self.rx.recv()
+    pub async fn pop(&self) -> Result<PieceOfWork, RecvError> {
+        self.rx.recv().await
     }
 
-    pub async fn push(&self, msg: PieceOfWork) -> Send<'_, PieceOfWork> {
-        self.tx.send(msg)
+    pub async fn push(&self, msg: PieceOfWork) -> Result<(), SendError<PieceOfWork>> {
+        self.tx.send(msg).await
     }
 }
