@@ -1,7 +1,7 @@
 use tokio::net::TcpStream;
 use tokio_util::codec::{Framed, FramedParts};
 
-use super::{handshake::HandshakeCodec, peermessage::PeerMessageCodec};
+use super::{handshake::HandshakeCodec, message::PeerMessageCodec};
 
 #[derive(Debug)]
 pub(crate) enum PeerStream {

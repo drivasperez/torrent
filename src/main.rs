@@ -1,10 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc::channel;
-use torrent::{
-    peer::{PeerMessage, PeerSession},
-    request_peer_info, Torrent,
-};
+use torrent::{peer::PeerSession, request_peer_info, Torrent};
 
 use structopt::StructOpt;
 
@@ -42,8 +39,7 @@ async fn main() -> anyhow::Result<()> {
             let mut session =
                 PeerSession::new(peer_data, torrent, work_queue, save_tx, PEER_ID).await?;
             session.connect().await?;
-            session.send_message(PeerMessage::Unchoke).await?;
-            session.send_message(PeerMessage::Interested).await?;
+            session.start_download().await?;
 
             Ok(()) as anyhow::Result<()>
         });

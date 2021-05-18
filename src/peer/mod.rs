@@ -1,68 +1,21 @@
-use crate::{
-    queues::{WorkQueue, WorkResult},
-    torrent_file::Torrent,
-};
-use anyhow::anyhow;
-use futures::{SinkExt, StreamExt};
+use crate::torrent_file::Torrent;
 use serde::Deserialize;
 use serde_bytes::ByteBuf;
 use std::net::Ipv4Addr;
-use std::sync::Arc;
-use tokio::net::TcpStream;
-use tokio::sync::mpsc::Sender;
-use tokio_util::codec::Framed;
 
 mod handshake;
-mod peermessage;
+mod message;
+mod session;
 mod stream;
 
-use handshake::{Handshake, HandshakeCodec};
-use stream::PeerStream;
-
-pub use self::peermessage::PeerMessage;
+pub use handshake::*;
+pub use message::*;
+pub use session::*;
 
 #[derive(Debug, Deserialize)]
 struct TrackerResponse {
     interval: u16,
     peers: ByteBuf,
-}
-
-#[derive(Debug)]
-struct PeerSessionState {
-    index: usize,
-    choked: bool,
-    interested: bool,
-    downloaded: usize,
-    requested: usize,
-    backlog: usize,
-    buf: Vec<u8>,
-    bitfield: Vec<u8>,
-}
-
-impl Default for PeerSessionState {
-    fn default() -> Self {
-        Self {
-            index: 0,
-            choked: true,
-            interested: false,
-            downloaded: 0,
-            requested: 0,
-            backlog: 0,
-            buf: Vec::default(),
-            bitfield: Default::default(),
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct PeerSession {
-    data: PeerData,
-    state: PeerSessionState,
-    torrent: Arc<Torrent>,
-    work_queue: WorkQueue,
-    save_tx: Sender<WorkResult>,
-    peer_id: [u8; 20],
-    stream: PeerStream,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -71,87 +24,12 @@ pub struct PeerData {
     port: u16,
 }
 
-impl std::fmt::Display for PeerSession {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}", &self.data.ip, &self.data.port)
-    }
-}
-
 impl PeerData {
     pub fn from_bytes(bytes: &[u8]) -> Self {
         let ip = Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3]);
         let port = u16::from_be_bytes([bytes[4], bytes[5]]);
 
         Self { ip, port }
-    }
-}
-
-impl PeerSession {
-    pub async fn new(
-        data: PeerData,
-        torrent: Arc<Torrent>,
-        work_queue: WorkQueue,
-        save_tx: Sender<WorkResult>,
-        peer_id: &[u8; 20],
-    ) -> anyhow::Result<Self> {
-        let stream = TcpStream::connect((data.ip, data.port)).await?;
-        let stream = Framed::new(stream, HandshakeCodec);
-
-        Ok(Self {
-            data,
-            torrent,
-            work_queue,
-            save_tx,
-            peer_id: peer_id.to_owned(),
-            stream: PeerStream::Handshake(Some(stream)),
-            state: Default::default(),
-        })
-    }
-
-    pub async fn connect(&mut self) -> anyhow::Result<()> {
-        log::trace!("Connecting to peer {}", self.data.ip);
-        let stream = self.stream.get_handshake_framed();
-
-        let handshake = Handshake::new(&self.torrent.info_hash, &self.peer_id);
-
-        stream.send(handshake).await?;
-
-        loop {
-            let n = stream.next().await;
-            match n {
-                None => continue,
-                Some(peer_shake) => {
-                    if peer_shake?.info_hash == self.torrent.info_hash {
-                        return Ok(());
-                    } else {
-                        return Err(anyhow!("Not the same hash"));
-                    }
-                }
-            }
-        }
-    }
-
-    // TODO: This (and PeerMessage) probably shouldn't be pub
-    pub async fn send_message(&mut self, msg: PeerMessage) -> anyhow::Result<()> {
-        let stream = self.stream.get_message_framed();
-
-        stream.send(msg).await?;
-
-        Ok(())
-    }
-
-    pub async fn recv_message(&mut self) -> anyhow::Result<PeerMessage> {
-        let stream = self.stream.get_message_framed();
-        loop {
-            let n = stream.next().await;
-            match n {
-                None => continue,
-                Some(res) => {
-                    let msg = res?;
-                    return Ok(msg);
-                }
-            }
-        }
     }
 }
 
