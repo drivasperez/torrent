@@ -44,9 +44,6 @@ async fn main() -> anyhow::Result<()> {
             session.connect().await?;
             session.send_message(PeerMessage::Unchoke).await?;
             session.send_message(PeerMessage::Interested).await?;
-            session.handle_message().await?;
-
-            session.download().await?;
 
             Ok(()) as anyhow::Result<()>
         });

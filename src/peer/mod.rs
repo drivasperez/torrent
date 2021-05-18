@@ -1,5 +1,4 @@
 use crate::{
-    bitfield::{Bitfield, BitfieldMut},
     queues::{WorkQueue, WorkResult},
     torrent_file::Torrent,
 };
@@ -153,64 +152,6 @@ impl PeerSession {
                 }
             }
         }
-    }
-
-    pub async fn download(&mut self) -> anyhow::Result<()> {
-        while let Ok(piece) = self.work_queue.pop().await {
-            dbg!(piece.idx);
-            dbg!(self.state.bitfield.len());
-            if !self.state.bitfield.has_piece(piece.idx) {
-                log::info!("Peer didn't have piece");
-                self.work_queue.push(piece).await?;
-                continue;
-            }
-
-            let len = self.torrent.file.info.piece_length(piece.idx);
-            self.state.requested = piece.idx;
-            self.send_message(PeerMessage::Request(piece.idx as u32, 0, len as u32))
-                .await?;
-
-            self.handle_message().await?;
-        }
-
-        Ok(())
-    }
-
-    pub async fn handle_message(&mut self) -> anyhow::Result<()> {
-        let message = self.recv_message().await?;
-
-        log::info!("Message: {}", &message);
-        match message {
-            PeerMessage::Choke => {
-                self.state.choked = true;
-            }
-            PeerMessage::Unchoke => {
-                self.state.choked = false;
-            }
-            PeerMessage::Interested => {
-                self.state.interested = true;
-            }
-            PeerMessage::NotInterested => {
-                self.state.interested = false;
-            }
-            PeerMessage::Have(idx) => {
-                self.state.bitfield.set_piece(idx as usize);
-            }
-            PeerMessage::Bitfield(bytes) => self.state.bitfield = bytes,
-            PeerMessage::Request(_, _, _) => {}
-            PeerMessage::Piece(piece) => {
-                log::info!("Got piece: {} bytes", piece.len());
-                self.save_tx
-                    .send(WorkResult {
-                        idx: self.state.requested,
-                        bytes: piece.to_vec(),
-                    })
-                    .await?;
-            }
-            PeerMessage::Cancel(_, _, _) => {}
-        };
-
-        Ok(())
     }
 }
 
