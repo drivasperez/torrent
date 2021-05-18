@@ -47,17 +47,18 @@ impl std::fmt::Display for PeerMessage {
 
 impl PeerMessage {
     pub fn payload_len(&self) -> usize {
+        let u32_size = std::mem::size_of::<u32>();
         match self {
             Self::Choke
             | Self::Unchoke
             | Self::Interested
             | Self::NotInterested
             | Self::KeepAlive => 0,
-            Self::Have(_) => std::mem::size_of::<u32>(),
+            Self::Have(_) => u32_size,
             Self::Bitfield(p) => p.len(),
-            Self::Request(_, _, _) => std::mem::size_of::<u32>() * 3,
-            Self::Piece(_, _, p) => 4 + 4 + p.len(),
-            Self::Cancel(_, _, _) => std::mem::size_of::<u32>() * 3,
+            Self::Request(_, _, _) => u32_size * 3,
+            Self::Piece(_, _, p) => u32_size + u32_size + p.len(),
+            Self::Cancel(_, _, _) => u32_size * 3,
         }
     }
     pub fn message_id(&self) -> Option<u8> {
@@ -74,7 +75,7 @@ impl PeerMessage {
             Self::Cancel(_, _, _) => 8,  // messageId = 8
         };
 
-        return Some(id);
+        Some(id)
     }
 }
 
@@ -90,17 +91,17 @@ impl Encoder<PeerMessage> for PeerMessageCodec {
         let message_id = item.message_id();
         match item {
             KeepAlive | Choke | Unchoke | Interested | NotInterested => {}
-            Have(p) => payload.extend_from_slice(&p.to_be_bytes()),
+            Have(p) => payload.extend(&p.to_be_bytes()),
             Bitfield(p) => payload = p,
             Piece(idx, offset, data) => {
-                payload.extend_from_slice(&idx.to_be_bytes());
-                payload.extend_from_slice(&offset.to_be_bytes());
-                payload.extend_from_slice(&data);
+                payload.extend(&idx.to_be_bytes());
+                payload.extend(&offset.to_be_bytes());
+                payload.extend(data);
             }
             Request(idx, begin, length) | Cancel(idx, begin, length) => {
-                payload.extend_from_slice(&idx.to_be_bytes());
-                payload.extend_from_slice(&begin.to_be_bytes());
-                payload.extend_from_slice(&length.to_be_bytes());
+                payload.extend(&idx.to_be_bytes());
+                payload.extend(&begin.to_be_bytes());
+                payload.extend(&length.to_be_bytes());
             }
         };
 
@@ -125,7 +126,9 @@ impl Decoder for PeerMessageCodec {
             return Ok(None);
         }
 
+        // Clone the bytes to peek ahead. TODO: Expensive, fix.
         let mut tmp_buf = src.clone();
+
         let message_length = tmp_buf.get_u32() as usize;
         let length_size = std::mem::size_of::<u32>();
 
