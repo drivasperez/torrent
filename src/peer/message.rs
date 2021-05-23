@@ -88,29 +88,40 @@ impl Encoder<PeerMessage> for PeerMessageCodec {
 
     fn encode(&mut self, item: PeerMessage, dst: &mut bytes::BytesMut) -> Result<(), Self::Error> {
         use PeerMessage::*;
-        let mut payload = Vec::new();
         let message_id = item.message_id();
+
         match item {
-            KeepAlive | Choke | Unchoke | Interested | NotInterested => {}
-            Have(p) => payload.extend(&p.to_be_bytes()),
-            Bitfield(p) => payload = p,
+            KeepAlive => {
+                dst.put_u32(0);
+            }
+            Choke | Unchoke | Interested | NotInterested => {
+                dst.put_u32(1);
+                dst.put_u8(message_id.unwrap());
+            }
+            Have(p) => {
+                dst.put_u32(1 + 4);
+                dst.put_u8(message_id.unwrap());
+                dst.put_u32(p);
+            }
+            Bitfield(p) => {
+                dst.put_u32(1 + p.len() as u32);
+                dst.put_u8(message_id.unwrap());
+                dst.extend_from_slice(&p);
+            }
             Piece(idx, offset, data) => {
-                payload.extend(&idx.to_be_bytes());
-                payload.extend(&offset.to_be_bytes());
-                payload.extend(data);
+                dst.put_u32(1 + 4 + 4 + data.len() as u32);
+                dst.put_u8(message_id.unwrap());
+                dst.put_u32(idx);
+                dst.put_u32(offset);
+                dst.extend_from_slice(&data);
             }
             Request(idx, begin, length) | Cancel(idx, begin, length) => {
-                payload.extend(&idx.to_be_bytes());
-                payload.extend(&begin.to_be_bytes());
-                payload.extend(&length.to_be_bytes());
+                dst.put_u32(1 + 4 + 4 + 4);
+                dst.put_u8(message_id.unwrap());
+                dst.put_u32(idx);
+                dst.put_u32(begin);
+                dst.put_u32(length);
             }
-        };
-
-        if let Some(message_id) = message_id {
-            let length = payload.len() as u32 + 1;
-            dst.put_u32(length);
-            dst.put_u8(message_id);
-            dst.extend_from_slice(&payload);
         }
 
         Ok(())
@@ -122,23 +133,26 @@ impl Decoder for PeerMessageCodec {
 
     type Error = std::io::Error;
 
-    fn decode(&mut self, src: &mut bytes::BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+    fn decode(&mut self, src: &mut bytes::BytesMut) -> std::io::Result<Option<Self::Item>> {
         if src.remaining() < 4 {
             return Ok(None);
         }
 
-        let message_length =
-            u32::from_be_bytes(src[..std::mem::size_of::<u32>()].try_into().unwrap()) as usize;
-
+        let message_length = u32::from_be_bytes(src[..4].try_into().unwrap()) as usize;
         let length_size = std::mem::size_of::<u32>();
 
-        if src.remaining() > message_length + length_size {
+        if src.remaining() >= message_length + length_size {
             src.advance(length_size);
             if message_length == 0 {
                 // Keep-alive
                 return Ok(Some(PeerMessage::KeepAlive));
             }
         } else {
+            log::trace!(
+                "Read buffer is {} bytes long, message is {} bytes long",
+                src.remaining(),
+                message_length,
+            );
             return Ok(None);
         }
 

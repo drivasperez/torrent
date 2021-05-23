@@ -30,8 +30,9 @@ async fn main() -> anyhow::Result<()> {
     let work_queue = torrent.work_queue().await?;
 
     let torrent = Arc::new(torrent);
+    let piece_count = torrent.file.info.hash_pieces().len();
 
-    for peer_data in details.peers.into_iter().take(1) {
+    for peer_data in details.peers.into_iter() {
         let torrent = Arc::clone(&torrent);
         let work_queue = work_queue.clone();
         let save_tx = save_tx.clone();
@@ -47,12 +48,19 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let save_handle = tokio::spawn(async move {
+        let mut downloaded_count = 0_usize;
         while let Some(result) = save_rx.recv().await {
             println!(
                 "Got work result: idx {}, len {} bytes",
                 result.idx,
                 result.bytes.len()
-            )
+            );
+            downloaded_count += 1;
+            log::debug!("downloaded piece {} of {}", downloaded_count, piece_count);
+            if downloaded_count >= piece_count {
+                log::info!("Download complete!");
+                break;
+            }
         }
     });
 
