@@ -2,9 +2,12 @@ use super::handshake::{Handshake, HandshakeCodec};
 use super::message::PeerMessage;
 use super::stream::PeerStream;
 use super::PeerData;
-use crate::bitfield::BitfieldMut;
 use crate::queues::{WorkQueue, WorkResult};
 use crate::Torrent;
+use crate::{
+    bitfield::{Bitfield, BitfieldMut},
+    queues::PieceOfWork,
+};
 use anyhow::anyhow;
 use futures::{SinkExt, StreamExt};
 use std::sync::Arc;
@@ -12,6 +15,30 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc::Sender;
 use tokio::time::{self, Duration};
 use tokio_util::codec::Framed;
+
+const MAX_BLOCK_SIZE: usize = 16_384;
+const MAX_BACKLOG: usize = 5;
+
+#[derive(Debug)]
+struct PieceState {
+    index: usize,
+    downloaded: usize,
+    requested: usize,
+    backlog: usize,
+    buf: Vec<u8>,
+}
+
+impl PieceState {
+    pub fn new(index: usize, len: usize) -> Self {
+        Self {
+            index,
+            downloaded: 0,
+            requested: 0,
+            backlog: 0,
+            buf: vec![0; len],
+        }
+    }
+}
 
 #[derive(Debug)]
 struct PeerSessionState {
@@ -25,14 +52,6 @@ struct PeerSessionState {
     bitfield: Vec<u8>,
 }
 
-struct PieceState {
-    index: usize,
-    downloaded: usize,
-    requested: usize,
-    backlog: usize,
-    buf: Vec<u8>,
-}
-
 impl Default for PeerSessionState {
     fn default() -> Self {
         Self {
@@ -44,6 +63,80 @@ impl Default for PeerSessionState {
             backlog: 0,
             buf: Vec::default(),
             bitfield: Default::default(),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct PeerConnection {
+    data: PeerData,
+    state: PeerSessionState,
+    torrent: Arc<Torrent>,
+    work_queue: WorkQueue,
+    save_tx: Sender<WorkResult>,
+    peer_id: [u8; 20],
+    stream: PeerStream,
+}
+
+impl PeerConnection {
+    pub async fn new(
+        data: PeerData,
+        torrent: Arc<Torrent>,
+        work_queue: WorkQueue,
+        save_tx: Sender<WorkResult>,
+        peer_id: &[u8; 20],
+    ) -> anyhow::Result<Self> {
+        let stream = TcpStream::connect((data.ip, data.port)).await?;
+        let stream = Framed::new(stream, HandshakeCodec);
+
+        Ok(Self {
+            data,
+            torrent,
+            work_queue,
+            save_tx,
+            peer_id: peer_id.to_owned(),
+            stream: PeerStream::Handshake(Some(stream)),
+            state: Default::default(),
+        })
+    }
+
+    pub async fn connect(mut self) -> anyhow::Result<PeerSession> {
+        log::debug!("Connecting to peer {}", self.data.ip);
+        let stream = self.stream.get_handshake_framed();
+
+        let handshake = Handshake::new(&self.torrent.info_hash, &self.peer_id);
+
+        stream.send(handshake).await?;
+
+        loop {
+            let n = stream.next().await;
+            match n {
+                None => continue,
+                Some(peer_shake) => {
+                    if peer_shake?.info_hash == self.torrent.info_hash {
+                        let Self {
+                            data,
+                            state,
+                            torrent,
+                            work_queue,
+                            save_tx,
+                            peer_id,
+                            stream,
+                        } = self;
+                        return Ok(PeerSession {
+                            data,
+                            state,
+                            torrent,
+                            work_queue,
+                            save_tx,
+                            peer_id,
+                            stream,
+                        });
+                    } else {
+                        return Err(anyhow!("Not the same hash"));
+                    }
+                }
+            }
         }
     }
 }
@@ -66,52 +159,28 @@ impl std::fmt::Display for PeerSession {
 }
 
 impl PeerSession {
-    pub async fn new(
+    pub async fn connect(
         data: PeerData,
         torrent: Arc<Torrent>,
         work_queue: WorkQueue,
         save_tx: Sender<WorkResult>,
         peer_id: &[u8; 20],
     ) -> anyhow::Result<Self> {
-        let stream = TcpStream::connect((data.ip, data.port)).await?;
-        let stream = Framed::new(stream, HandshakeCodec);
+        let connection = PeerConnection::new(data, torrent, work_queue, save_tx, peer_id).await?;
+        let mut session = connection.connect().await?;
 
-        Ok(Self {
-            data,
-            torrent,
-            work_queue,
-            save_tx,
-            peer_id: peer_id.to_owned(),
-            stream: PeerStream::Handshake(Some(stream)),
-            state: Default::default(),
-        })
-    }
+        if let PeerMessage::Bitfield(bitfield) = session.recv_message().await? {
+            log::debug!("Got bitfield from peer, length 0x{:0x}", bitfield.len());
+            session.state.bitfield = bitfield;
 
-    pub async fn connect(&mut self) -> anyhow::Result<()> {
-        log::trace!("Connecting to peer {}", self.data.ip);
-        let stream = self.stream.get_handshake_framed();
-
-        let handshake = Handshake::new(&self.torrent.info_hash, &self.peer_id);
-
-        stream.send(handshake).await?;
-
-        loop {
-            let n = stream.next().await;
-            match n {
-                None => continue,
-                Some(peer_shake) => {
-                    if peer_shake?.info_hash == self.torrent.info_hash {
-                        return Ok(());
-                    } else {
-                        return Err(anyhow!("Not the same hash"));
-                    }
-                }
-            }
+            Ok(session)
+        } else {
+            Err(anyhow!("Peer didn't send bitfield"))
         }
     }
 
     async fn send_message(&mut self, msg: PeerMessage) -> anyhow::Result<()> {
-        log::trace!("Sending peer message: {}", &msg);
+        log::debug!("Sending peer message: {}", &msg);
         let stream = self.stream.get_message_framed();
 
         stream.send(msg).await?;
@@ -136,7 +205,7 @@ impl PeerSession {
                         if let PeerMessage::KeepAlive = msg {
                             continue;
                         }
-                        log::trace!("Received peer message: {}", &msg);
+                        log::debug!("Received peer message: {}", &msg);
                         return Ok(msg);
                     }
                 }
@@ -187,10 +256,76 @@ impl PeerSession {
     pub async fn start_download(&mut self) -> anyhow::Result<()> {
         self.send_message(PeerMessage::Unchoke).await?;
         self.send_message(PeerMessage::Interested).await?;
-        let msg = self.recv_message().await?;
 
-        log::info!("Message: {}", msg);
+        while let Ok(work) = self.work_queue.pop().await {
+            if !self.state.bitfield.has_piece(work.idx) {
+                self.work_queue.push(work).await?;
+                continue;
+            }
+
+            let buf = self.attempt_download(&work).await?;
+
+            // TODO: Make this a result?
+            if !work.verify_buf(&buf) {
+                log::warn!("Piece {} failed integrity check", work.idx);
+                self.work_queue.push(work).await?;
+                continue;
+            }
+
+            self.send_message(PeerMessage::Have(work.idx as u32))
+                .await?;
+            self.save_tx
+                .send(WorkResult {
+                    idx: work.idx,
+                    bytes: buf,
+                })
+                .await?;
+        }
 
         Ok(())
+    }
+
+    async fn send_request(
+        &mut self,
+        idx: usize,
+        requested: usize,
+        block_size: usize,
+    ) -> anyhow::Result<()> {
+        self.send_message(PeerMessage::Request(
+            idx as u32,
+            requested as u32,
+            block_size as u32,
+        ))
+        .await
+    }
+
+    async fn attempt_download(&mut self, work: &PieceOfWork) -> anyhow::Result<Vec<u8>> {
+        log::debug!(
+            "Attempting download of piece {} from peer {}",
+            work.idx,
+            self.data.ip
+        );
+        let mut state = PieceState::new(work.idx, work.length);
+
+        while state.downloaded < work.length {
+            if !self.state.choked {
+                while state.backlog < MAX_BACKLOG && state.requested < work.length {
+                    let mut block_size = MAX_BLOCK_SIZE;
+
+                    if work.length - state.requested < block_size {
+                        block_size = work.length - state.requested;
+                    }
+
+                    self.send_request(work.idx, state.requested, block_size)
+                        .await?;
+                    state.backlog += 1;
+                    state.requested += block_size;
+                }
+            }
+
+            self.read_message(&mut state).await?;
+        }
+
+        Ok(state.buf)
     }
 }

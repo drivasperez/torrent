@@ -1,10 +1,19 @@
 use async_channel::{RecvError, SendError};
+use sha1::{Digest, Sha1};
 
 #[derive(Debug, Clone)]
 pub struct PieceOfWork {
     pub idx: usize,
     pub hash: [u8; 20],
     pub length: usize,
+}
+
+impl PieceOfWork {
+    pub fn verify_buf(&self, buf: &[u8]) -> bool {
+        let digest: [u8; 20] = Sha1::digest(buf).into();
+
+        self.hash == digest
+    }
 }
 
 #[derive(Debug, Clone)]
