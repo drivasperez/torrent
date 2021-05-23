@@ -1,7 +1,9 @@
-use super::handshake::{Handshake, HandshakeCodec};
 use super::message::PeerMessage;
-use super::stream::PeerStream;
 use super::PeerData;
+use super::{
+    handshake::{Handshake, HandshakeCodec},
+    stream::{make_message_stream, HandshakeStream, MessageStream},
+};
 use crate::queues::{WorkQueue, WorkResult};
 use crate::Torrent;
 use crate::{
@@ -75,7 +77,7 @@ struct PeerConnection {
     work_queue: WorkQueue,
     save_tx: Sender<WorkResult>,
     peer_id: [u8; 20],
-    stream: PeerStream,
+    stream: HandshakeStream,
 }
 
 impl PeerConnection {
@@ -95,21 +97,20 @@ impl PeerConnection {
             work_queue,
             save_tx,
             peer_id: peer_id.to_owned(),
-            stream: PeerStream::Handshake(Some(stream)),
+            stream,
             state: Default::default(),
         })
     }
 
     pub async fn connect(mut self) -> anyhow::Result<PeerSession> {
         log::debug!("Connecting to peer {}", self.data.ip);
-        let stream = self.stream.get_handshake_framed();
 
         let handshake = Handshake::new(&self.torrent.info_hash, &self.peer_id);
 
-        stream.send(handshake).await?;
+        self.stream.send(handshake).await?;
 
         loop {
-            let n = stream.next().await;
+            let n = self.stream.next().await;
             match n {
                 None => continue,
                 Some(peer_shake) => {
@@ -130,7 +131,7 @@ impl PeerConnection {
                             work_queue,
                             save_tx,
                             peer_id,
-                            stream,
+                            stream: make_message_stream(stream),
                         });
                     } else {
                         return Err(anyhow!("Not the same hash"));
@@ -149,7 +150,7 @@ pub struct PeerSession {
     work_queue: WorkQueue,
     save_tx: Sender<WorkResult>,
     peer_id: [u8; 20],
-    stream: PeerStream,
+    stream: MessageStream,
 }
 
 impl std::fmt::Display for PeerSession {
@@ -181,15 +182,13 @@ impl PeerSession {
 
     async fn send_message(&mut self, msg: PeerMessage) -> anyhow::Result<()> {
         log::debug!("Sending peer message: {}", &msg);
-        let stream = self.stream.get_message_framed();
 
-        stream.send(msg).await?;
+        self.stream.send(msg).await?;
 
         Ok(())
     }
 
     async fn recv_message(&mut self) -> anyhow::Result<PeerMessage> {
-        let stream = self.stream.get_message_framed();
         loop {
             let timeout = time::sleep(Duration::from_secs(30));
             tokio::pin!(timeout);
@@ -198,7 +197,7 @@ impl PeerSession {
                     log::error!("Timed out");
                     return Err(anyhow::anyhow!("Timed out while receiving message"));
                 }
-                n = stream.next() => match n {
+                n = self.stream.next() => match n {
                     None => continue,
                     Some(res) => {
                         let msg = res?;

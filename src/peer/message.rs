@@ -1,4 +1,5 @@
 use bytes::{Buf, BufMut};
+use std::convert::TryInto;
 use tokio_util::codec::{Decoder, Encoder};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -126,10 +127,10 @@ impl Decoder for PeerMessageCodec {
             return Ok(None);
         }
 
-        // Clone the bytes to peek ahead. TODO: Expensive, fix.
-        let mut tmp_buf = src.clone();
+        let message_length =
+            u32::from_be_bytes(src[..std::mem::size_of::<u32>()].try_into().unwrap()) as usize;
 
-        let message_length = tmp_buf.get_u32() as usize;
+        dbg!(message_length);
         let length_size = std::mem::size_of::<u32>();
 
         if src.remaining() > message_length + length_size {
