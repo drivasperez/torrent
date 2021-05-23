@@ -31,7 +31,7 @@ async fn main() -> anyhow::Result<()> {
 
     let torrent = Arc::new(torrent);
 
-    for peer_data in details.peers.into_iter() {
+    for peer_data in details.peers.into_iter().take(1) {
         let torrent = Arc::clone(&torrent);
         let work_queue = work_queue.clone();
         let save_tx = save_tx.clone();

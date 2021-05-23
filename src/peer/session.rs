@@ -171,7 +171,7 @@ impl PeerSession {
         let mut session = connection.connect().await?;
 
         if let PeerMessage::Bitfield(bitfield) = session.recv_message().await? {
-            log::debug!("Got bitfield from peer, length 0x{:0x}", bitfield.len());
+            log::debug!("connected to peer; bitfield length 0x{:0x}", bitfield.len());
             session.state.bitfield = bitfield;
 
             Ok(session)

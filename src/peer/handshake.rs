@@ -50,8 +50,7 @@ impl Decoder for HandshakeCodec {
             return Ok(None);
         }
 
-        let mut tmp_buf = src.clone();
-        let prot_len = tmp_buf.get_u8() as usize;
+        let prot_len = src[0] as usize;
         if prot_len != PROTOCOL_NAME.len() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,

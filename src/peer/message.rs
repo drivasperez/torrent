@@ -130,7 +130,6 @@ impl Decoder for PeerMessageCodec {
         let message_length =
             u32::from_be_bytes(src[..std::mem::size_of::<u32>()].try_into().unwrap()) as usize;
 
-        dbg!(message_length);
         let length_size = std::mem::size_of::<u32>();
 
         if src.remaining() > message_length + length_size {
