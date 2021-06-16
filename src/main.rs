@@ -37,8 +37,10 @@ async fn main() -> anyhow::Result<()> {
         let work_queue = work_queue.clone();
         let save_tx = save_tx.clone();
         let handle = tokio::spawn(async move {
-            let mut session =
-                PeerSession::connect(peer_data, torrent, work_queue, save_tx, PEER_ID).await?;
+            let mut session = PeerSession::new(peer_data, torrent, work_queue, save_tx, PEER_ID)
+                .await?
+                .connect()
+                .await?;
             session.start_download().await?;
 
             Ok(()) as anyhow::Result<()>

@@ -1,8 +1,9 @@
 use super::message::PeerMessage;
 use super::PeerData;
+use super::PeerMessageCodec;
 use super::{
     handshake::{Handshake, HandshakeCodec},
-    stream::{make_message_stream, HandshakeStream, MessageStream},
+    stream::make_message_stream,
 };
 use crate::queues::{WorkQueue, WorkResult};
 use crate::Torrent;
@@ -70,17 +71,23 @@ impl Default for PeerSessionState {
 }
 
 #[derive(Debug)]
-struct PeerConnection {
+pub struct PeerSession<Codec = HandshakeCodec> {
     data: PeerData,
     state: PeerSessionState,
     torrent: Arc<Torrent>,
     work_queue: WorkQueue,
     save_tx: Sender<WorkResult>,
     peer_id: [u8; 20],
-    stream: HandshakeStream,
+    stream: Framed<TcpStream, Codec>,
 }
 
-impl PeerConnection {
+impl std::fmt::Display for PeerSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", &self.data.ip, &self.data.port)
+    }
+}
+
+impl PeerSession<HandshakeCodec> {
     pub async fn new(
         data: PeerData,
         torrent: Arc<Torrent>,
@@ -102,14 +109,14 @@ impl PeerConnection {
         })
     }
 
-    pub async fn connect(mut self) -> anyhow::Result<PeerSession> {
+    pub async fn connect(mut self) -> anyhow::Result<PeerSession<PeerMessageCodec>> {
         log::debug!("Connecting to peer {}", self.data.ip);
 
         let handshake = Handshake::new(&self.torrent.info_hash, &self.peer_id);
 
         self.stream.send(handshake).await?;
 
-        loop {
+        let mut session = loop {
             let n = self.stream.next().await;
             match n {
                 None => continue,
@@ -124,7 +131,7 @@ impl PeerConnection {
                             peer_id,
                             stream,
                         } = self;
-                        return Ok(PeerSession {
+                        break Ok(PeerSession {
                             data,
                             state,
                             torrent,
@@ -134,41 +141,11 @@ impl PeerConnection {
                             stream: make_message_stream(stream),
                         });
                     } else {
-                        return Err(anyhow!("Not the same hash"));
+                        break Err(anyhow!("Not the same hash"));
                     }
                 }
             }
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct PeerSession {
-    data: PeerData,
-    state: PeerSessionState,
-    torrent: Arc<Torrent>,
-    work_queue: WorkQueue,
-    save_tx: Sender<WorkResult>,
-    peer_id: [u8; 20],
-    stream: MessageStream,
-}
-
-impl std::fmt::Display for PeerSession {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}", &self.data.ip, &self.data.port)
-    }
-}
-
-impl PeerSession {
-    pub async fn connect(
-        data: PeerData,
-        torrent: Arc<Torrent>,
-        work_queue: WorkQueue,
-        save_tx: Sender<WorkResult>,
-        peer_id: &[u8; 20],
-    ) -> anyhow::Result<Self> {
-        let connection = PeerConnection::new(data, torrent, work_queue, save_tx, peer_id).await?;
-        let mut session = connection.connect().await?;
+        }?;
 
         if let PeerMessage::Bitfield(bitfield) = session.recv_message().await? {
             log::debug!("connected to peer; bitfield length 0x{:0x}", bitfield.len());
@@ -179,7 +156,9 @@ impl PeerSession {
             Err(anyhow!("Peer didn't send bitfield"))
         }
     }
+}
 
+impl PeerSession<PeerMessageCodec> {
     async fn send_message(&mut self, msg: PeerMessage) -> anyhow::Result<()> {
         log::debug!("Sending peer message: {}", &msg);
 

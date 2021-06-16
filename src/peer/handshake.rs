@@ -13,7 +13,7 @@ pub struct Handshake {
 }
 
 #[derive(Debug)]
-pub(crate) struct HandshakeCodec;
+pub struct HandshakeCodec;
 
 impl Handshake {
     pub fn new(info_hash: &[u8; 20], peer_id: &[u8; 20]) -> Self {

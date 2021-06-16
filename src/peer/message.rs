@@ -81,7 +81,7 @@ impl PeerMessage {
 }
 
 #[derive(Debug)]
-pub(crate) struct PeerMessageCodec;
+pub struct PeerMessageCodec;
 
 impl Encoder<PeerMessage> for PeerMessageCodec {
     type Error = std::io::Error;
