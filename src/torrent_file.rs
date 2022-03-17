@@ -19,7 +19,7 @@ pub struct File {
     pub md5sum: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Deserialize, Serialize)]
 pub struct Info {
     pub name: String,
     pub pieces: ByteBuf,
@@ -38,6 +38,12 @@ pub struct Info {
     #[serde(default)]
     #[serde(rename = "root hash")]
     pub root_hash: Option<String>,
+}
+
+impl std::fmt::Debug for Info {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[Torrent info {}, length {:?}]", self.name, self.length)
+    }
 }
 
 impl Info {

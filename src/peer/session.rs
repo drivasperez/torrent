@@ -23,13 +23,23 @@ use tracing::{debug, error, warn};
 const MAX_BLOCK_SIZE: usize = 16_384;
 const MAX_BACKLOG: usize = 5;
 
-#[derive(Debug)]
 struct PieceState {
     index: usize,
     downloaded: usize,
     requested: usize,
     backlog: usize,
     buf: Vec<u8>,
+}
+
+impl std::fmt::Debug for PieceState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PieceState")
+            .field("index", &self.index)
+            .field("downloaded", &self.downloaded)
+            .field("requested", &self.requested)
+            .field("backlog", &self.backlog)
+            .finish()
+    }
 }
 
 impl PieceState {
@@ -44,7 +54,6 @@ impl PieceState {
     }
 }
 
-#[derive(Debug)]
 struct PeerSessionState {
     index: usize,
     choked: bool,
@@ -54,6 +63,21 @@ struct PeerSessionState {
     backlog: usize,
     buf: Vec<u8>,
     bitfield: Vec<u8>,
+}
+
+impl std::fmt::Debug for PeerSessionState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            index,
+            choked,
+            interested,
+            downloaded,
+            requested,
+            backlog,
+            ..
+        } = self;
+        write!(f, "[PeerSessionState: index {index}, choked {choked}, interested {interested}, downloaded {downloaded}, requested: {requested}, backlog: {backlog}]",)
+    }
 }
 
 impl Default for PeerSessionState {
@@ -71,7 +95,6 @@ impl Default for PeerSessionState {
     }
 }
 
-#[derive(Debug)]
 pub struct PeerSession<Codec = HandshakeCodec> {
     data: PeerData,
     state: PeerSessionState,
@@ -80,6 +103,16 @@ pub struct PeerSession<Codec = HandshakeCodec> {
     save_tx: Sender<WorkResult>,
     peer_id: [u8; 20],
     stream: Framed<TcpStream, Codec>,
+}
+
+impl<T> std::fmt::Debug for PeerSession<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}:{} - {:?}",
+            &self.data.ip, &self.data.port, &self.state
+        )
+    }
 }
 
 impl std::fmt::Display for PeerSession {

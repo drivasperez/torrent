@@ -3,6 +3,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc::{channel, Receiver};
 use torrent::{peer::PeerSession, queues::WorkResult, request_peer_info, Torrent};
 use tracing::{debug, info};
+use tracing_subscriber::prelude::*;
 
 use structopt::StructOpt;
 
@@ -14,9 +15,13 @@ struct Opt {
     torrent: PathBuf,
 }
 
+fn init_tracing() {
+    tracing_subscriber::fmt::init();
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
+    init_tracing();
     let opt = Opt::from_args();
 
     let file = tokio::fs::read(opt.torrent).await?;
@@ -62,15 +67,15 @@ async fn main() -> anyhow::Result<()> {
 
 #[tracing::instrument]
 async fn save_results(mut save_rx: Receiver<WorkResult>, piece_count: usize) {
-    let mut downloaded_count = 0_usize;
+    let mut downloaded_count = 0;
+    let mut total_bytes = 0;
     while let Some(result) = save_rx.recv().await {
-        println!(
-            "Got work result: idx {}, len {} bytes",
-            result.idx,
-            result.bytes.len()
-        );
         downloaded_count += 1;
-        debug!("downloaded piece {} of {}", downloaded_count, piece_count);
+        total_bytes += result.bytes.len();
+        info!(
+            "downloaded piece {} of {}: {} total bytes",
+            downloaded_count, piece_count, total_bytes
+        );
         if downloaded_count >= piece_count {
             info!("Download complete!");
             break;
