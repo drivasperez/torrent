@@ -18,6 +18,7 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc::Sender;
 use tokio::time::{self, Duration};
 use tokio_util::codec::Framed;
+use tracing::{debug, error, warn};
 
 const MAX_BLOCK_SIZE: usize = 16_384;
 const MAX_BACKLOG: usize = 5;
@@ -109,8 +110,9 @@ impl PeerSession<HandshakeCodec> {
         })
     }
 
+    #[tracing::instrument]
     pub async fn connect(mut self) -> anyhow::Result<PeerSession<PeerMessageCodec>> {
-        log::debug!("Connecting to peer {}", self.data.ip);
+        debug!("Connecting to peer {}", self.data.ip);
 
         let handshake = Handshake::new(&self.torrent.info_hash, &self.peer_id);
 
@@ -148,7 +150,7 @@ impl PeerSession<HandshakeCodec> {
         }?;
 
         if let PeerMessage::Bitfield(bitfield) = session.recv_message().await? {
-            log::debug!("connected to peer; bitfield length 0x{:0x}", bitfield.len());
+            debug!("connected to peer; bitfield length 0x{:0x}", bitfield.len());
             session.state.bitfield = bitfield;
 
             Ok(session)
@@ -159,21 +161,23 @@ impl PeerSession<HandshakeCodec> {
 }
 
 impl PeerSession<PeerMessageCodec> {
+    #[tracing::instrument]
     async fn send_message(&mut self, msg: PeerMessage) -> anyhow::Result<()> {
-        log::debug!("Sending peer message: {}", &msg);
+        debug!("Sending peer message: {}", &msg);
 
         self.stream.send(msg).await?;
 
         Ok(())
     }
 
+    #[tracing::instrument]
     async fn recv_message(&mut self) -> anyhow::Result<PeerMessage> {
         loop {
             let timeout = time::sleep(Duration::from_secs(30));
             tokio::pin!(timeout);
             tokio::select! {
                 _ = &mut timeout => {
-                    log::error!("Timed out");
+                    error!("Timed out");
                     return Err(anyhow::anyhow!("Timed out while receiving message"));
                 }
                 n = self.stream.next() => match n {
@@ -183,7 +187,7 @@ impl PeerSession<PeerMessageCodec> {
                         if let PeerMessage::KeepAlive = msg {
                             continue;
                         }
-                        log::debug!("Received peer message: {}", &msg);
+                        debug!("Received peer message: {}", &msg);
                         return Ok(msg);
                     }
                 }
@@ -193,6 +197,7 @@ impl PeerSession<PeerMessageCodec> {
     }
 
     /// Receive a message from the peer and adjust session state accordingly.
+    #[tracing::instrument]
     async fn read_message(&mut self, state: &mut PieceState) -> anyhow::Result<()> {
         let msg = self.recv_message().await?;
         match msg {
@@ -231,6 +236,7 @@ impl PeerSession<PeerMessageCodec> {
         Ok(())
     }
 
+    #[tracing::instrument]
     pub async fn start_download(&mut self) -> anyhow::Result<()> {
         self.send_message(PeerMessage::Unchoke).await?;
         self.send_message(PeerMessage::Interested).await?;
@@ -245,7 +251,7 @@ impl PeerSession<PeerMessageCodec> {
 
             // TODO: Make this a result?
             if !work.verify_buf(&buf) {
-                log::warn!("Piece {} failed integrity check", work.idx);
+                warn!("Piece {} failed integrity check", work.idx);
                 self.work_queue.push(work).await?;
                 continue;
             }
@@ -263,6 +269,7 @@ impl PeerSession<PeerMessageCodec> {
         Ok(())
     }
 
+    #[tracing::instrument]
     async fn send_request(
         &mut self,
         idx: usize,
@@ -277,11 +284,11 @@ impl PeerSession<PeerMessageCodec> {
         .await
     }
 
+    #[tracing::instrument]
     async fn attempt_download(&mut self, work: &PieceOfWork) -> anyhow::Result<Vec<u8>> {
-        log::debug!(
+        debug!(
             "Attempting download of piece {} from peer {}",
-            work.idx,
-            self.data.ip
+            work.idx, self.data.ip
         );
         let mut state = PieceState::new(work.idx, work.length);
 

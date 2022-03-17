@@ -1,7 +1,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::mpsc::channel;
-use torrent::{peer::PeerSession, request_peer_info, Torrent};
+use tokio::sync::mpsc::{channel, Receiver};
+use torrent::{peer::PeerSession, queues::WorkResult, request_peer_info, Torrent};
+use tracing::{debug, info};
 
 use structopt::StructOpt;
 
@@ -15,7 +16,7 @@ struct Opt {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    pretty_env_logger::init();
+    tracing_subscriber::fmt::init();
     let opt = Opt::from_args();
 
     let file = tokio::fs::read(opt.torrent).await?;
@@ -25,7 +26,7 @@ async fn main() -> anyhow::Result<()> {
 
     let mut handles = Vec::new();
 
-    let (save_tx, mut save_rx) = channel(50);
+    let (save_tx, save_rx) = channel(50);
 
     let work_queue = torrent.work_queue().await?;
 
@@ -49,22 +50,7 @@ async fn main() -> anyhow::Result<()> {
         handles.push(handle);
     }
 
-    let save_handle = tokio::spawn(async move {
-        let mut downloaded_count = 0_usize;
-        while let Some(result) = save_rx.recv().await {
-            println!(
-                "Got work result: idx {}, len {} bytes",
-                result.idx,
-                result.bytes.len()
-            );
-            downloaded_count += 1;
-            log::debug!("downloaded piece {} of {}", downloaded_count, piece_count);
-            if downloaded_count >= piece_count {
-                log::info!("Download complete!");
-                break;
-            }
-        }
-    });
+    let save_handle = tokio::spawn(save_results(save_rx, piece_count));
 
     for handle in handles {
         handle.await??;
@@ -72,4 +58,22 @@ async fn main() -> anyhow::Result<()> {
     save_handle.await?;
 
     Ok(())
+}
+
+#[tracing::instrument]
+async fn save_results(mut save_rx: Receiver<WorkResult>, piece_count: usize) {
+    let mut downloaded_count = 0_usize;
+    while let Some(result) = save_rx.recv().await {
+        println!(
+            "Got work result: idx {}, len {} bytes",
+            result.idx,
+            result.bytes.len()
+        );
+        downloaded_count += 1;
+        debug!("downloaded piece {} of {}", downloaded_count, piece_count);
+        if downloaded_count >= piece_count {
+            info!("Download complete!");
+            break;
+        }
+    }
 }

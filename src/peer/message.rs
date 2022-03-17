@@ -1,6 +1,7 @@
 use bytes::{Buf, BufMut};
 use std::convert::TryInto;
 use tokio_util::codec::{Decoder, Encoder};
+use tracing::trace;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PeerMessage {
@@ -148,7 +149,7 @@ impl Decoder for PeerMessageCodec {
                 return Ok(Some(PeerMessage::KeepAlive));
             }
         } else {
-            log::trace!(
+            trace!(
                 "Read buffer is {} bytes long, message is {} bytes long",
                 src.remaining(),
                 message_length,
